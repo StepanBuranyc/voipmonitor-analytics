@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { InputError, parseCdrCsv } from "./lib/cdr.mjs";
 import { createWorker, modelConfig } from "./lib/models.mjs";
-import { callRow, callsCsv, filterRows, makeReport, normalizeFilter, topicOf } from "./lib/report.mjs";
+import { callRow, callsCsv, filterRows, makeReport, normalizeFilter, reportCsv, topicOf } from "./lib/report.mjs";
 import { openStore } from "./lib/store.mjs";
 import { createVoipmonitorImport, voipmonitorConfig } from "./lib/voipmonitor.mjs";
 import { topics } from "./public/catalog.mjs";
@@ -19,6 +19,8 @@ const staticFiles = new Map([
   ["/app.mjs", ["public/app.mjs", "text/javascript; charset=utf-8"]],
   ["/chart.mjs", ["public/chart.mjs", "text/javascript; charset=utf-8"]],
   ["/catalog.mjs", ["public/catalog.mjs", "text/javascript; charset=utf-8"]],
+  ["/csv.mjs", ["public/csv.mjs", "text/javascript; charset=utf-8"]],
+  ["/csv-preview.mjs", ["public/csv-preview.mjs", "text/javascript; charset=utf-8"]],
   ["/examples/cdr.csv", ["examples/cdr.csv", "text/csv; charset=utf-8"]],
   ["/examples/transcripts.csv", ["examples/transcripts.csv", "text/csv; charset=utf-8"]],
   ["/examples/VPM-1001.wav", ["examples/VPM-1001.wav", "audio/wav"]],
@@ -101,7 +103,17 @@ async function receiveImport(req, url, store) {
       audio.set(name, Buffer.from(await file.arrayBuffer()));
     }
   }
-  const { calls, issues } = parseCdrCsv(new Uint8Array(await cdr.arrayBuffer()), store.findCall);
+  const rawMapping = form.get("mapping");
+  let mapping;
+  if (rawMapping !== null) {
+    try {
+      if (typeof rawMapping !== "string" || rawMapping.length > 65_536) throw new Error("mapping");
+      mapping = JSON.parse(rawMapping);
+    } catch {
+      throw new InputError("Neplatné mapování sloupců CSV.");
+    }
+  }
+  const { calls, issues } = parseCdrCsv(new Uint8Array(await cdr.arrayBuffer()), store.findCall, mapping);
   return store.importBatch(calls, audio, [...issues, ...fileIssues]);
 }
 
@@ -179,7 +191,11 @@ export function makeServer({
           { "Content-Disposition": `attachment; filename="${path.split("/").at(-1)}"` } : {});
       }
       if (method === "GET" && path === "/api/config") {
-        return json(res, 200, { localModels: worker.enabled, localWhisper: worker.canTranscribe, models: worker.models });
+        const ollama = worker.providers.find((provider) => provider.id === "ollama");
+        return json(res, 200, {
+          localModels: Boolean(ollama?.models.length), localWhisper: worker.canTranscribe,
+          models: ollama?.models ?? [], providers: worker.providers,
+        });
       }
       if (path === "/api/voipmonitor") {
         if (method === "GET") return json(res, 200, { ...voip.status(), configError: voipError ?? null });
@@ -190,14 +206,16 @@ export function makeServer({
         }
       }
       if (method === "POST" && path === "/api/import") return json(res, 200, await receiveImport(req, url, store));
-      if (method === "POST" && path === "/api/analyze") {
+      if (method === "POST" && ["/api/analyze", "/api/analyze/sample"].includes(path)) {
         const payload = await readJson(req);
-        if (!worker.enabled) throw new HttpError(409, "Nastavte lokální Ollama a model pro analýzu.");
-        if (!worker.models.includes(payload.model)) throw new InputError("Vyberte některý z nakonfigurovaných modelů.");
+        if (!worker.enabled) throw new HttpError(409, "Nejdřív nastavte poskytovatele a model pro AI analýzu.");
+        const provider = worker.select(payload.provider ?? "ollama", payload.model);
+        if (!provider) throw new InputError("Vyberte některý z nakonfigurovaných modelů.");
+        if (path.endsWith("/sample")) return json(res, 200, await worker.sample(provider, payload.model));
         if (payload.key !== undefined && (typeof payload.key !== "string" || !/^[0-9a-f]{32}$/.test(payload.key))) {
           throw new InputError("Neplatný identifikátor hovoru.");
         }
-        const queued = store.queue(payload.model, payload.key, worker.canTranscribe);
+        const queued = store.queue(payload.model, payload.key, worker.canTranscribe, provider.id);
         worker.run();
         return json(res, 202, { queued });
       }
@@ -219,12 +237,17 @@ export function makeServer({
           return json(res, 200, { topic: payload.topic });
         }
       }
-      if (method === "GET" && ["/api/report", "/api/calls", "/api/export.csv"].includes(path)) {
+      if (method === "GET" && ["/api/report", "/api/calls", "/api/export.csv", "/api/export/report.csv"].includes(path)) {
         const dataset = params.get("dataset") || "pilot";
         if (dataset !== "pilot" && dataset !== "demo") throw new InputError("Neplatný zdroj dat.");
         const filter = normalizeFilter(params);
         const data = store.list(dataset);
         if (path === "/api/report") return json(res, 200, makeReport(data, filter));
+        if (path === "/api/export/report.csv") {
+          return send(res, 200, reportCsv(makeReport(data, filter), filter), "text/csv; charset=utf-8", {
+            "Content-Disposition": 'attachment; filename="voipmonitor-report.csv"',
+          });
+        }
         const filtered = filterRows(data, filter);
         if (path === "/api/export.csv") {
           const csv = callsCsv(filtered, params.get("includeTranscript") === "1");

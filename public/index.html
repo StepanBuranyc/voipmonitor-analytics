@@ -19,6 +19,7 @@
     <nav aria-label="Hlavní navigace">
       <button class="nav-button" type="button" data-view="dashboard" aria-current="page"><span class="icon icon-grid" aria-hidden="true"></span>Přehled</button>
       <button class="nav-button" type="button" data-view="calls"><span class="icon icon-list" aria-hidden="true"></span>Hovory</button>
+      <button class="nav-button" type="button" data-view="analysis"><span class="icon icon-wave" aria-hidden="true"></span>AI analýza</button>
       <button class="nav-button" type="button" data-view="import"><span class="icon icon-upload" aria-hidden="true"></span>Import dat</button>
     </nav>
     <div class="rail-bottom">
@@ -59,6 +60,10 @@
     <section id="calls" aria-label="Hovory" hidden>
       <div id="models-panel"></div>
       <div class="card table-panel">
+        <div id="map-filter" class="map-filter" hidden>
+          <span id="map-filter-label"></span>
+          <button id="clear-map-filter" type="button" class="link-button">Odebrat filtr</button>
+        </div>
         <form id="call-filters" class="table-filters">
           <label class="search-field"><span class="icon icon-search" aria-hidden="true"></span><span class="sr-only">Vyhledat hovory</span><input id="search" name="q" type="search" placeholder="Hledat v hovorech a přepisech" maxlength="120"></label>
           <label><span class="sr-only">Téma</span><select id="topic-filter" name="topic"><option value="">Všechna témata</option></select></label>
@@ -67,6 +72,11 @@
         </form>
         <div id="calls-result" aria-busy="false"></div>
       </div>
+    </section>
+
+    <section id="analysis" aria-label="AI analýza hovorů" hidden>
+      <div id="analysis-content" aria-busy="false"></div>
+      <div id="analysis-sample" class="card panel" role="status" hidden></div>
     </section>
 
     <section id="import" class="import-grid" aria-label="Import dat" hidden>
@@ -84,7 +94,7 @@
         </form>
         <div id="voip-result" class="voip-result" role="status" hidden></div>
       </div>
-      <div class="card import-card">
+      <div class="card import-card csv-import-card">
         <h2>CSV s hotovými přepisy nebo CDR</h2>
         <p>Přepisy z jiného nástroje lze nahrát samostatně. Nahrávky WAV jsou volitelné.</p>
         <form id="import-form">
@@ -93,13 +103,19 @@
             <span><strong>Soubor CSV</strong><small>UTF-8, nejvýše 64 MiB a 50 000 řádků</small></span>
             <input type="file" name="cdr" accept=".csv,text/csv" required>
           </label>
+          <section id="csv-preview" class="csv-preview" aria-labelledby="csv-preview-title" hidden>
+            <h3 id="csv-preview-title">Náhled a výběr sloupců</h3>
+            <p class="form-hint">Přiřaďte pole, která chcete použít. Sloupce označené jako kontext se předají vybranému modelu společně s přepisem.</p>
+            <div id="csv-preview-table"></div>
+          </section>
+          <p id="csv-preview-status" class="form-hint" role="status" hidden></p>
           <label class="file-field">
             <span class="file-icon icon icon-wave" aria-hidden="true"></span>
             <span><strong>Nahrávky hovorů</strong><small>WAV 16bit PCM, nejvýše 60 souborů v dávce</small></span>
             <input type="file" name="wav" accept=".wav,audio/wav" multiple>
           </label>
           <p class="import-limit">Nejvýše 32 MiB na WAV a 96 MiB na dávku.</p>
-          <button type="submit" class="button button-primary" id="submit-import">Importovat soubory</button>
+          <button type="submit" class="button button-primary" id="submit-import" disabled>Importovat vybrané sloupce</button>
         </form>
         <div id="import-result" role="status" hidden></div>
       </div>
@@ -131,7 +147,12 @@
     </div>
     <form id="export-form">
       <p id="export-description">CSV použije aktuální filtry.</p>
-      <label class="check-field"><input type="checkbox" name="includeTranscript"> Zahrnout celé přepisy</label>
+      <fieldset class="export-options">
+        <legend>Typ exportu</legend>
+        <label class="check-field"><input type="radio" name="format" value="calls" checked> Seznam hovorů</label>
+        <label class="check-field"><input type="radio" name="format" value="report"> Souhrnný report témat a požadavků</label>
+      </fieldset>
+      <label class="check-field" id="transcript-export"><input type="checkbox" name="includeTranscript"> Zahrnout celé přepisy</label>
       <button class="button button-primary" type="submit">Stáhnout CSV</button>
     </form>
   </dialog>

@@ -1,5 +1,6 @@
 import { setupTrend } from "/chart.mjs";
 import { sentiments, statuses, topics } from "/catalog.mjs";
+import { attachCsvPreview } from "/csv-preview.mjs";
 
 const byId = (id) => document.getElementById(id);
 const all = (selector) => [...document.querySelectorAll(selector)];
@@ -20,8 +21,8 @@ const elapsed = (seconds) => {
 
 const state = {
   view: "dashboard", dataset: "demo", from: "", to: "", branch: "",
-  topic: "", sentiment: "", q: "", page: 1, report: null,
-  config: { localModels: false, localWhisper: false, models: [] }, model: "",
+  topic: "", sentiment: "", q: "", labelType: "", label: "", page: 1, report: null,
+  config: { localWhisper: false, providers: [] }, model: "",
 };
 let revision = 0;
 let closeChart = null;
@@ -32,7 +33,8 @@ let voipDisplay = "";
 let detailKey = null;
 let detailCall = null;
 let detailRequest = 0;
-const titleFor = { dashboard: "Přehled hovorů", calls: "Hovory", import: "Import dat" };
+let sampleBusy = false;
+const titleFor = { dashboard: "Přehled hovorů", calls: "Hovory", analysis: "AI analýza hovorů", import: "Import dat" };
 const sourceLabel = { demo: "Ukázkové hovory", pilot: "Importované hovory" };
 
 async function api(path, options) {
@@ -55,7 +57,7 @@ function tell(message = "", error = false) {
 function params(includeCallFilters = false) {
   const result = new URLSearchParams({ dataset: state.dataset });
   const fields = ["from", "to", "branch"];
-  if (includeCallFilters) fields.push("topic", "sentiment", "q");
+  if (includeCallFilters) fields.push("topic", "sentiment", "q", "labelType", "label");
   for (const field of fields) {
     if (state[field]) result.set(field, state[field]);
   }
@@ -103,6 +105,23 @@ function metric(label, value, note, change, symbol, color = "") {
 
 function empty(title, message, action = "") {
   return `<div class="empty"><h2>${title}</h2><p>${message}</p>${action}</div>`;
+}
+
+function renderTopicMap(report) {
+  if (!report.topicMap.length) return "";
+  const branch = (name, kind, entries, topic) => `<div class="topic-branch"><h3>${name}</h3>
+    ${entries.length ? `<ul>${entries.map(({ label, count }) => `<li><button type="button" class="map-item"
+      data-map-topic="${topic}" data-map-kind="${kind}" data-map-label="${html(label)}" aria-label="${html(label)}, zobrazit hovory">
+      <span>${html(label)}</span><strong>${csNumber(count)}</strong></button></li>`).join("")}</ul>` : "<p class=\"form-hint\">Zatím bez výsledků.</p>"}
+  </div>`;
+  return `<section class="card panel topic-map" aria-label="Mapa důvodů volání">
+    <div class="panel-head"><div><h2>Mapa důvodů volání</h2><p>Rozbalte téma nebo vyberte důvod a otevřete související hovory.</p></div>
+      <button type="button" class="button button-outline" data-report-export>Export reportu</button></div>
+    ${report.topicMap.map(({ id, count, share, reasons, requests }, index) => `<details class="topic-node"${index ? "" : " open"}>
+      <summary>${topics[id]} <span>${csNumber(count)} · ${percent(share)}</span></summary>
+      <div class="topic-branches">${branch("Problémy a důvody", "reason", reasons, id)}${branch("Požadavky zákazníků", "request", requests, id)}</div>
+    </details>`).join("")}
+  </section>`;
 }
 
 function table(calls, showStatus = false) {
@@ -165,6 +184,7 @@ function renderDashboard(report) {
         ${topicMarkup}
       </section>
     </div>
+    ${renderTopicMap(report)}
     <section class="card table-panel" aria-label="Nedávné hovory">
       <div class="panel-head table-heading"><h2>Nedávné hovory</h2><button type="button" class="link-button" data-view="calls" data-clear-filters>Zobrazit všechny hovory</button></div>
       ${recent.length ? table(recent) : empty("V tomto období nejsou hovory", "Změňte období nebo pobočku ve filtrech.")}
@@ -172,29 +192,88 @@ function renderDashboard(report) {
   if (series.length) closeChart = setupTrend(dashboard.querySelector("canvas"), series, dashboard.querySelector(".chart-tooltip"));
 }
 
+function modelChoices() {
+  return state.config.providers.flatMap((provider) =>
+    provider.models.map((model) => ({
+      key: `${provider.id}:${model}`, id: provider.id, model, label: provider.label, external: provider.external,
+    })));
+}
+
+function modelSelector() {
+  const choices = modelChoices();
+  const current = choices.find((choice) => choice.key === state.model) ?? choices[0];
+  if (!current) return "";
+  return `<label><span class="sr-only">Model pro analýzu</span><select data-analysis-model>
+    ${choices.map((choice) => `<option value="${html(choice.key)}"${choice.key === current.key ? " selected" : ""}>${html(choice.label)} · ${html(choice.model)}</option>`).join("")}
+  </select></label>`;
+}
+
+function modelNotice(choice) {
+  return choice?.external ? `Služba ${choice.label} dostane přepis a sloupce vybrané jako kontext.` : "";
+}
+
+function modelNoticeMarkup() {
+  const choices = modelChoices();
+  const notice = modelNotice(choices.find((choice) => choice.key === state.model) ?? choices[0]);
+  return `<p class="form-hint" data-model-notice${notice ? "" : " hidden"}>${html(notice)}</p>`;
+}
+
+const readyCount = (report) => state.config.localWhisper ? report.queue.waiting : report.queue.waitingWithTranscript;
+
 function renderModels(report) {
   const panel = byId("models-panel");
   if (state.dataset === "demo" || !report.latest) {
     panel.replaceChildren();
     return;
   }
-  const config = state.config;
-  if (!config.localModels) {
-    panel.innerHTML = '<div class="card models-panel"><div><strong>Lokální analýza čeká na nastavení</strong><p>Pro analýzu přepisů připojte model v Ollama. Pro přepis z WAV připojte také Whisper.</p></div></div>';
+  if (!modelChoices().length) {
+    panel.innerHTML = '<div class="card models-panel"><div><strong>AI analýza čeká na nastavení modelu</strong><p>Poskytovatele a modely najdete v části AI analýza.</p></div><button type="button" class="button button-outline" data-view="analysis">Otevřít AI analýzu</button></div>';
     return;
   }
   const { active } = report.queue;
-  const waiting = config.localWhisper ? report.queue.waiting : report.queue.waitingWithTranscript;
-  panel.innerHTML = `<div class="card models-panel"><div><strong>Lokální modely</strong>
+  const waiting = readyCount(report);
+  panel.innerHTML = `<div class="card models-panel"><div><strong>AI analýza</strong>
      <p>Čeká na analýzu nebo opakování ${csNumber(waiting)} · Ve frontě a zpracování ${csNumber(active)}</p></div>
-     <form id="queue-form"><label><span class="sr-only">Model pro analýzu</span><select id="model-select">
-       ${options(Object.fromEntries(config.models.map((model) => [model, model])), state.model)}</select></label>
+     <form id="queue-form">${modelSelector()}
        <button type="submit" class="button button-primary"${waiting ? "" : " disabled"}>Analyzovat čekající</button>
+       ${modelNoticeMarkup()}
      </form></div>`;
+}
+
+function renderAnalysis(report) {
+  const waiting = readyCount(report);
+  const canAnalyze = modelChoices().length > 0;
+  byId("analysis-content").innerHTML = `<div class="analysis-grid">
+    <section class="card panel">
+      <h2>Zpracování hovorů</h2>
+      <div class="analysis-queue">
+        <span><strong>${csNumber(waiting)}</strong> připraveno</span>
+        <span><strong>${csNumber(report.queue.active)}</strong> ve frontě a zpracování</span>
+        <span><strong>${csNumber(report.queue.analyzed)}</strong> analyzováno</span>
+      </div>
+      ${canAnalyze ? `<form id="analysis-form" class="analysis-form">${modelSelector()}${modelNoticeMarkup()}
+        <div class="analysis-actions">
+          <button type="submit" class="button button-primary" value="batch"${waiting ? "" : " disabled"}>Analyzovat čekající hovory</button>
+          <button type="submit" class="button button-outline" value="sample"${sampleBusy ? " disabled" : ""}>Vyzkoušet na ukázce</button>
+        </div>
+      </form>` : '<p>Přidejte klíč nebo adresu vlastního AI serveru do konfigurace aplikace.</p>'}
+      ${!state.config.localWhisper ? '<p class="form-hint">K analýze přepisů stačí zvolený model. Pro samostatné nahrávky nastavte také službu Whisper.</p>' : ""}
+      <button type="button" class="link-button" data-view="dashboard">Otevřít přehled výsledků</button>
+    </section>
+    <section class="card panel">
+      <h2>Poskytovatelé</h2>
+      <ul class="provider-rows">${state.config.providers.map(({ label, models, setting }) => `<li>
+        <strong>${html(label)}</strong>${models.length
+          ? `<span title="Nastavené modely">${html(models.join(", "))}</span>`
+          : `<code>${html(setting)}</code>`}</li>`).join("")}</ul>
+    </section>
+  </div>`;
 }
 
 function renderCalls(data, report) {
   const pane = byId("calls-result");
+  byId("map-filter").hidden = !state.labelType;
+  byId("map-filter-label").textContent = state.label;
   renderModels(report);
   if (data.total && !data.calls.length && state.page > 1) {
     state.page = 1;
@@ -218,19 +297,22 @@ async function refresh(background = false) {
   if (state.view === "import") return;
   const request = ++revision;
   clearTimeout(pollTimer);
-  const pane = byId(state.view === "dashboard" ? "dashboard" : "calls-result");
+  const pane = byId({ dashboard: "dashboard", calls: "calls-result", analysis: "analysis-content" }[state.view]);
   if (!background) pane.setAttribute("aria-busy", "true");
   try {
-    const report = await api(`/api/report?${params()}`);
+    const report = await api(`/api/report?${state.view === "analysis" ? "dataset=pilot" : params()}`);
     if (request !== revision) return;
     state.report = report;
-    if (!background) updateFilters(report);
+    if (!background && state.view !== "analysis") updateFilters(report);
     const activeSource = sourceLabel[state.dataset];
-    byId("page-note").textContent = report.previous && state.view === "dashboard"
-      ? `${activeSource} · Srovnání s obdobím ${dateSpan(report.prior.from, report.prior.to)}`
-      : activeSource;
+    byId("page-note").textContent = state.view === "analysis" ? "Témata, důvody, požadavky a výsledek z přepisů"
+      : report.previous && state.view === "dashboard"
+        ? `${activeSource} · Srovnání s obdobím ${dateSpan(report.prior.from, report.prior.to)}`
+        : activeSource;
     if (state.view === "dashboard") {
       renderDashboard(report);
+    } else if (state.view === "analysis") {
+      renderAnalysis(report);
     } else {
       const query = params(true);
       if (report.from) query.set("from", report.from);
@@ -255,6 +337,7 @@ async function refresh(background = false) {
 function showView(view, focus = true) {
   if (!Object.hasOwn(titleFor, view)) return;
   state.view = view;
+  if (view === "analysis" && state.dataset !== "pilot") setDataset("pilot");
   revision += 1;
   clearTimeout(pollTimer);
   clearTimeout(voipTimer);
@@ -262,8 +345,8 @@ function showView(view, focus = true) {
   const heading = byId("page-title");
   heading.textContent = titleFor[view];
   byId("page-note").textContent = view === "import" ? "Hovory z VoIPmonitoru a přepisy z externích zdrojů" : sourceLabel[state.dataset];
-  byId("period-filters").hidden = view === "import";
-  byId("open-export").hidden = view === "import";
+  byId("period-filters").hidden = view === "import" || view === "analysis";
+  byId("open-export").hidden = view === "import" || view === "analysis";
   byId("open-import").hidden = view === "import";
   for (const id of Object.keys(titleFor)) byId(id).hidden = id !== view;
   for (const button of all("nav button[data-view]")) {
@@ -279,7 +362,7 @@ function setDataset(dataset) {
   state.dataset = dataset;
   state.report = null;
   byId("dataset").value = dataset;
-  Object.assign(state, { from: "", to: "", branch: "", topic: "", sentiment: "", q: "", page: 1 });
+  Object.assign(state, { from: "", to: "", branch: "", topic: "", sentiment: "", q: "", labelType: "", label: "", page: 1 });
 }
 
 function renderDetail(call) {
@@ -289,7 +372,7 @@ function renderDetail(call) {
   byId("detail-meta").textContent = [call.cdrId, date(call.startedAt.slice(0, 10), longDay),
     call.startedAt.slice(11, 16), call.branch || (call.sensor ? `Sonda ${call.sensor}` : "")].filter(Boolean).join(" · ");
   const hasAnalysisInput = call.transcript?.length || (call.hasAudio && state.config.localWhisper);
-  const canAnalyze = state.config.localModels && call.dataset === "pilot" && hasAnalysisInput &&
+  const canAnalyze = modelChoices().length > 0 && call.dataset === "pilot" && hasAnalysisInput &&
     ["ready", "error", "complete"].includes(call.status);
   byId("detail-content").innerHTML = `
     <div class="detail-badges">${call.topic ? `<span class="label-pill">${topics[call.topic]}</span>` : ""}
@@ -301,9 +384,13 @@ function renderDetail(call) {
       ${call.loss == null ? "" : `<span>Ztráta <strong>${percent(call.loss, 2)}</strong></span>`}
     </div>
     ${analysis ? `<section class="detail-block"><h3>Souhrn</h3><p>${html(analysis.summary)}</p>
-      <dl><dt>Požadavek</dt><dd>${html(analysis.request)}</dd><dt>Výsledek</dt><dd>${html(analysis.outcome)}</dd>
-      <dt>Model</dt><dd>${html(analysis.model)}</dd></dl>
+      <dl>${analysis.reason ? `<dt>Důvod volání</dt><dd>${html(analysis.reason)}</dd>` : ""}
+      <dt>Požadavek</dt><dd>${html(analysis.request)}</dd><dt>Výsledek</dt><dd>${html(analysis.outcome)}</dd>
+      <dt>Model</dt><dd>${html([state.config.providers.find((provider) => provider.id === analysis.provider)?.label, analysis.model].filter(Boolean).join(" · "))}</dd></dl>
       ${call.status === "complete" ? `<label>Opravit téma <select id="edit-topic">${options(topics, call.topic)}</select></label>` : ""}
+    </section>` : ""}
+    ${call.context?.length ? `<section class="detail-block"><h3>Kontext z CSV</h3>
+      <dl>${call.context.map(({ label, value }) => `<dt>${html(label)}</dt><dd>${html(value)}</dd>`).join("")}</dl>
     </section>` : ""}
     <section class="detail-block"><h3>Nahrávka</h3>
       ${call.hasAudio ? `<audio id="recording" controls preload="metadata" src="/api/calls/${html(call.key)}/audio"></audio>` : "<p>Nahrávka není k dispozici.</p>"}
@@ -319,8 +406,9 @@ function renderDetail(call) {
       }).join("")}</ol>` : "<p>Přepis zatím není k dispozici.</p>"}
       ${call.error ? `<p class="notice error" role="status">${html(call.error)}</p>` : ""}
       ${canAnalyze ? `<form id="detail-queue-form" class="detail-actions">
-        <label>Model <select id="detail-model">${options(Object.fromEntries(state.config.models.map((model) => [model, model])), state.model)}</select></label>
+        ${modelSelector()}
         <button class="button button-primary" type="submit">${analysis ? "Analyzovat znovu" : "Analyzovat hovor"}</button>
+        ${modelNoticeMarkup()}
       </form>` : ""}
     </section>`;
 }
@@ -342,11 +430,12 @@ async function openDetail(key) {
   }
 }
 
-async function queueJobs(key, model, button) {
+async function queueJobs(key, choice, button) {
+  if (!choice) return;
   button.disabled = true;
   try {
-    const { queued } = await post("/api/analyze", key ? { key, model } : { model });
-    state.model = model;
+    const { queued } = await post("/api/analyze", { ...(key ? { key } : {}), model: choice.model, provider: choice.id });
+    state.model = choice.key;
     tell(queued ? `Do fronty bylo přidáno ${csNumber(queued)} hovorů.` : "Žádné hovory nebyly přidány do fronty.");
     if (key && detailKey === key) await openDetail(key);
     await refresh();
@@ -366,17 +455,24 @@ async function queueJobs(key, model, button) {
 document.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
+  if (button.hasAttribute("data-report-export")) return openExport("report");
+  if (button.dataset.mapTopic) {
+    Object.assign(state, {
+      topic: button.dataset.mapTopic, sentiment: "", q: "", labelType: button.dataset.mapKind, label: button.dataset.mapLabel, page: 1,
+    });
+    return showView("calls");
+  }
   if (button.dataset.view) {
     if (button.hasAttribute("data-open-voip") && voipRun) {
       setDataset("pilot");
       Object.assign(state, { from: voipRun.from, to: voipRun.to });
     }
-    if (button.hasAttribute("data-clear-filters")) Object.assign(state, { topic: "", sentiment: "", q: "" });
+    if (button.hasAttribute("data-clear-filters")) Object.assign(state, { topic: "", sentiment: "", q: "", labelType: "", label: "" });
     if (button.dataset.view === "calls" && state.view !== "calls") state.page = 1;
     return showView(button.dataset.view);
   }
   if (button.dataset.topic) {
-    Object.assign(state, { topic: button.dataset.topic, sentiment: "", q: "", page: 1 });
+    Object.assign(state, { topic: button.dataset.topic, sentiment: "", q: "", labelType: "", label: "", page: 1 });
     return showView("calls");
   }
   if (button.dataset.call) return void openDetail(button.dataset.call);
@@ -423,20 +519,28 @@ byId("detail-content").addEventListener("change", async (event) => {
 
 byId("dataset").addEventListener("change", (event) => {
   setDataset(event.target.value);
-  showView(state.view === "import" ? "dashboard" : state.view);
+  showView(state.view === "import" || state.view === "analysis" && state.dataset === "demo" ? "dashboard" : state.view);
 });
 byId("open-import").addEventListener("click", () => showView("import"));
-byId("open-export").addEventListener("click", () => {
+function openExport(format) {
+  byId("export-form").elements.format.value = format;
+  byId("transcript-export").hidden = format === "report";
   byId("export-description").textContent = `${sourceLabel[state.dataset]} se stáhnou podle aktuálního období a filtrů.`;
   byId("export-dialog").showModal();
+}
+byId("open-export").addEventListener("click", () => openExport("calls"));
+byId("export-form").addEventListener("change", (event) => {
+  if (event.target.name === "format") byId("transcript-export").hidden = event.target.value === "report";
 });
 byId("export-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const query = params(state.view === "calls");
-  if (new FormData(event.currentTarget).has("includeTranscript")) query.set("includeTranscript", "1");
+  const form = new FormData(event.currentTarget);
+  const report = form.get("format") === "report";
+  if (!report && form.has("includeTranscript")) query.set("includeTranscript", "1");
   const link = document.createElement("a");
-  link.href = `/api/export.csv?${query}`;
-  link.download = "voipmonitor-hovory.csv";
+  link.href = `${report ? "/api/export/report.csv" : "/api/export.csv"}?${query}`;
+  link.download = report ? "voipmonitor-report.csv" : "voipmonitor-hovory.csv";
   link.click();
   byId("export-dialog").close();
 });
@@ -464,18 +568,49 @@ byId("call-filters").addEventListener("submit", (event) => {
   tell();
   void refresh();
 });
-byId("models-panel").addEventListener("change", (event) => {
-  if (event.target.id === "model-select") state.model = event.target.value;
+byId("clear-map-filter").addEventListener("click", () => {
+  Object.assign(state, { labelType: "", label: "", page: 1 });
+  void refresh();
 });
-byId("models-panel").addEventListener("submit", (event) => {
-  if (event.target.id !== "queue-form") return;
-  event.preventDefault();
-  void queueJobs(null, byId("model-select").value, event.submitter);
+document.addEventListener("change", (event) => {
+  if (!event.target.hasAttribute("data-analysis-model")) return;
+  state.model = event.target.value;
+  const note = event.target.form.querySelector("[data-model-notice]");
+  const text = modelNotice(modelChoices().find((item) => item.key === state.model));
+  note.textContent = text;
+  note.hidden = !text;
 });
-byId("detail-content").addEventListener("submit", (event) => {
-  if (event.target.id !== "detail-queue-form" || !detailKey) return;
+
+async function trySample(choice, button) {
+  if (sampleBusy || !choice) return;
+  sampleBusy = true;
+  button.disabled = true;
+  const result = byId("analysis-sample");
+  result.hidden = false;
+  result.textContent = "Analyzuji fiktivní přepis…";
+  try {
+    const analysis = await post("/api/analyze/sample", { model: choice.model, provider: choice.id });
+    result.innerHTML = `<h2>Výsledek ukázkové analýzy</h2><h3>${html(analysis.title)}</h3>
+      <p>${html(analysis.summary)}</p><p class="form-hint">${topics[analysis.topic]} · ${html(analysis.reason)} · ${sentiments[analysis.sentiment]}</p>`;
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    sampleBusy = false;
+    button.disabled = false;
+    const current = byId("analysis-form")?.querySelector('button[value="sample"]');
+    if (current) current.disabled = false;
+  }
+}
+
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!["queue-form", "detail-queue-form", "analysis-form"].includes(form.id)) return;
   event.preventDefault();
-  void queueJobs(detailKey, byId("detail-model").value, event.submitter);
+  const choice = modelChoices().find((item) => item.key === form.querySelector("[data-analysis-model]").value);
+  const button = event.submitter ?? form.querySelector('button[type="submit"]');
+  if (button.value === "sample") return void trySample(choice, button);
+  if (form.id === "detail-queue-form" && !detailKey) return;
+  void queueJobs(form.id === "detail-queue-form" ? detailKey : null, choice, button);
 });
 
 function renderVoipImport(data) {
@@ -547,18 +682,19 @@ voipForm.addEventListener("submit", async (event) => {
   }
 });
 
+const csvPreview = attachCsvPreview(byId("import-form"));
 byId("import-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  const submit = byId("submit-import");
   const result = byId("import-result");
-  submit.disabled = true;
+  csvPreview.setSubmitting(true);
   result.classList.remove("form-error");
   result.hidden = false;
   result.textContent = "Načítám soubory…";
   const payload = new FormData(form);
   if (!payload.get("wav")?.name) payload.delete("wav");
   try {
+    payload.set("mapping", JSON.stringify(csvPreview.mapping()));
     const outcome = await api("/api/import", { method: "POST", body: payload });
     const hasCalls = outcome.added + outcome.existing > 0;
     if (hasCalls) setDataset("pilot");
@@ -566,12 +702,15 @@ byId("import-form").addEventListener("submit", async (event) => {
       <p>Nové hovory ${csNumber(outcome.added)} · Již uložené ${csNumber(outcome.existing)} · Přidáno přepisů ${csNumber(outcome.transcripts)} · S nahrávkou ${csNumber(outcome.matched)}</p>
       ${outcome.issues.length ? `<ul>${outcome.issues.map((issue) => `<li>${html(issue.row ? `Řádek CSV ${issue.row}` : issue.file)} · ${html(issue.message)}</li>`).join("")}</ul>` : ""}
       ${hasCalls ? '<button type="button" class="button button-primary" data-view="calls">Otevřít hovory</button>' : ""}`;
-    if (hasCalls) form.reset();
+    if (hasCalls && !outcome.issues.length) {
+      form.reset();
+      csvPreview.clear();
+    }
   } catch (error) {
     result.classList.add("form-error");
     result.textContent = error.message;
   } finally {
-    submit.disabled = false;
+    csvPreview.setSubmitting(false);
   }
 });
 
@@ -579,7 +718,7 @@ byId("topic-filter").insertAdjacentHTML("beforeend", options(topics));
 byId("sentiment-filter").insertAdjacentHTML("beforeend", options(sentiments));
 try {
   state.config = await api("/api/config");
-  state.model = state.config.models[0] ?? "";
+  state.model = modelChoices()[0]?.key ?? "";
 } catch (error) {
   tell(error.message, true);
 }

@@ -29,7 +29,7 @@ Nastavení konektoru patří do `.env.local`. Po jeho změně použijte `docker 
 1. Před exportem odstraňte telefonní čísla, jména a identifikátory ze sloupců CSV, názvů souborů a vyslovených pasáží v audiu. Použijte stejné náhradní ID v CSV a v názvu nahrávky.
 2. Exportujte CSV v UTF-8 se sloupci `cdrId` a `calldate`. Podporované oddělovače jsou středník, čárka a tabulátor. Datum bez časové zóny se čte jako čas v Praze. Čas s uvedeným posunem se přepočítá na pražský čas.
 3. Pojmenujte soubor například `VPM-1001.wav` pro `cdrId` rovné `VPM-1001`. Při jiném názvu přidejte do CSV sloupec `audio_file`. WAV musí být 16bitový PCM, mono nebo stereo, 8 až 48 kHz.
-4. V **Import dat** vyberte CSV a WAV. Aplikace vypíše chyby v párování a uloží platné CDR. Chybějící WAV lze doplnit opakováním importu se stejným CSV. Identitu hovoru tvoří dvojice `id_sensor` a `cdrId`. Tento pilot předpokládá jednu instalaci VoIPmonitoru.
+4. V **Import dat** vyberte CSV a případné WAV. V náhledu přiřaďte sloupce k polím nebo zvolte **Vynechat**. Sloupce označené jako **Kontext pro AI** se ukládají u hovoru a odesílají s přepisem vybranému modelu. Potvrďte **Importovat vybrané sloupce**. Identitu hovoru tvoří dvojice `id_sensor` a `cdrId`. Chybějící WAV lze doplnit opakováním importu. Pilot předpokládá jednu instalaci VoIPmonitoru.
 
 Volitelná pole jsou `id_sensor`, `branch`, `connect_duration` v sekundách, `mos` na škále 0–5, `jitter_ms` a `packet_loss_pct`. Při absenci `connect_duration` použije import `duration`. Přijímá i sloupce VoIPmonitoru `mos_min_mult10`, `a_avgjitter_mult10`, `b_avgjitter_mult10` a `packet_loss_perc_mult1000`. Pokud není uvedený `jitter_ms`, vezme se vyšší z dostupných průměrů obou směrů. Prázdné hodnoty se zachovají jako chybějící.
 
@@ -37,7 +37,7 @@ Příklad je v `examples/cdr.csv` a `examples/VPM-1001.wav`. CSV obsahuje druhý
 
 ### Hotové přepisy z CSV
 
-Uložte jeden hovor na řádek podle vzoru `examples/transcripts.csv`. Použijte `cdr_id`, `calldate` a `transcript`. Lze použít i názvy `call_id`, `started_at`, `cdr_started_at`, `timestamp`, `transcription` nebo `prepis`. U už načteného hovoru stačí ID a přepis. Pokud se stejné ID vyskytuje na více sondách, doplňte `id_sensor`. Importovaný přepis můžete otevřít a vyhledat ihned. Pro vytvoření souhrnu, tématu a sentimentu připojte model v Ollama.
+Uložte jeden hovor na řádek podle vzoru `examples/transcripts.csv`. Náhled předvyplní běžné názvy jako `cdr_id`, `cdr_started_at` a `transcription`. Vlastní názvy přiřaďte v náhledu. U už načteného hovoru stačí ID a přepis. Pokud se stejné ID vyskytuje na více sondách, přiřaďte také ID sondy. Importovaný přepis můžete otevřít a vyhledat ihned.
 
 ## Přímý import z VoIPmonitoru
 
@@ -49,31 +49,32 @@ Import běží na pozadí po dnech přes `getVoipCalls` a `getVoiceRecording`. P
 
 Při `VOIPMONITOR_QOS=1` se navíc aplikace pokusí doplnit MOS, jitter a ztrátovost z dokumentovaného výpisu CDR přes přihlášenou relaci. Dostupnost závisí na verzi a oprávnění účtu. Pokud se rozšířený výpis nepodaří, stav importu zobrazí upozornění a základní import pokračuje. [VoIPmonitor Web API](https://www.voipmonitor.org/doc/WEB_API)
 
-## Lokální analýza
+## AI analýza přes API
 
-Spusťte [whisper.cpp server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server) s vícejazyčným modelem, například `ggml-small.bin`. Použijte verzi s podporou výstupu `verbose_json` a časových značek.
+V `.env.local` nastavte klíč vybraného poskytovatele nebo adresu vlastního modelového serveru. Proměnné s názvy modelů přijímají seznam oddělený čárkou. Vyberte model s podporou strukturovaného výstupu JSON Schema.
 
-```powershell
-whisper-server -m ggml-small.bin --host 127.0.0.1 --port 8080 -l cs
-```
+| Poskytovatel | Proměnné | Výchozí model |
+| --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY`, volitelně `OPENAI_MODELS` | `gpt-4.1-mini` |
+| Google Gemini | `GEMINI_API_KEY`, volitelně `GEMINI_MODELS` | `gemini-4-hydrogen` |
+| xAI Grok | `XAI_API_KEY`, volitelně `XAI_MODELS` | `grok-4.7` |
+| Groq | `GROQ_API_KEY`, volitelně `GROQ_MODELS` | `openai/gpt-oss-20b` |
+| Vlastní OpenAI kompatibilní server | `CUSTOM_AI_URL`, `CUSTOM_AI_MODELS`, volitelně `CUSTOM_AI_API_KEY` | |
+| Ollama | `OLLAMA_URL`, `OLLAMA_MODELS` | |
 
-Spusťte [Ollama](https://docs.ollama.com/capabilities/structured-outputs) s jedním nebo více již staženými lokálními modely a restartujte webový pilot s nastavením níže. Názvy modelů upravte podle vlastního prostředí. Pro plně lokální režim používejte lokálně uložené modely a vypněte cloudové funkce v Ollama.
+Jako `CUSTOM_AI_URL` lze zadat například `https://model.example.cz/v1`. Aplikace použije Chat Completions a JSON Schema. Pro Ollama použijte adresu její služby dostupnou z webové aplikace. Klíče zůstávají v konfiguraci serveru.
 
-```powershell
-$env:WHISPER_URL = 'http://127.0.0.1:8080'
-$env:WHISPER_LANGUAGE = 'cs'
-$env:OLLAMA_URL = 'http://127.0.0.1:11434'
-$env:OLLAMA_MODELS = 'qwen3:4b'
-node --env-file-if-exists=.env.local server.mjs
-```
+Po restartu otevřete **AI analýza**. Vyberte poskytovatele a model a spusťte analýzu čekajících hovorů nebo test na fiktivním přepisu. Stejné modely lze vybírat v detailu hovoru. Modelu se předávají přepis a výslovně zvolený kontext. Výsledkem je téma, konkrétní důvod, požadavek, výsledek hovoru, souhrn a sentiment odhadnutý z textu. Přepis zůstává k dispozici při selhání analýzy. Pro provoz s citlivými daty a účtovaným API zajistěte přístup k webu vhodným přihlášením před reverzní proxy.
 
-V **Hovory** zvolte model a spusťte analýzu čekajících nahrávek. U jednotlivého hovoru lze zvolit jiný model. Přepis zůstane uložený i při selhání souhrnu. Whisper dostává nahrávku převedenou na mono 16 kHz a Ollama dostává přepis s čísly segmentů. Sentiment je odhad z obsahu rozhovoru. U témat a trendů se počítá s posledním uloženým výsledkem a s ručními opravami.
+Pokud importujete samotné WAV, nastavte také `WHISPER_URL` na [službu whisper.cpp](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server) s vícejazyčným modelem a podporou `verbose_json`. Jazyk nastavíte pomocí `WHISPER_LANGUAGE`, výchozí je čeština. Aplikace posílá zvuk do nastavené služby Whisper a text do poskytovatele analýzy.
 
-Pro analýzu už hotových přepisů stačí nastavit `OLLAMA_URL` a `OLLAMA_MODELS`. Whisper se použije pro vytvoření přepisu z WAV.
+[OpenAI](https://developers.openai.com/api/docs/guides/structured-outputs) · [Gemini](https://ai.google.dev/gemini-api/docs/openai) · [xAI](https://docs.x.ai/developers/model-capabilities/text/structured-outputs) · [Groq](https://console.groq.com/docs/structured-outputs) · [Ollama](https://docs.ollama.com/capabilities/structured-outputs)
 
 ## Data pro reporty
 
-`GET /api/report` poskytuje denní či týdenní časovou řadu, souhrn za období, pokrytí a srovnání. `GET /api/calls` poskytuje seznam a stránkování, `GET /api/calls/<key>` detail včetně přepisu a souhrnu a `GET /api/export.csv` export. Přehled, seznam i export přijímají `dataset`, `from`, `to`, `branch`, `topic`, `sentiment` a `q`. Výchozí zdroj API je `pilot`, ukázkový je `demo`. Aplikace předává výběr období z rozhraní. Export může obsahovat i celé přepisy pomocí `includeTranscript=1`.
+Mapa důvodů volání umožňuje rozbalit témata, vidět četnost důvodů a požadavků a otevřít přesný výběr hovorů. Četnosti vycházejí z uložených výsledků. Shodné popisky se slučují bez ohledu na velikost písmen, diakritiku a interpunkci.
+
+`GET /api/report` poskytuje časovou řadu, pokrytí, srovnání a mapu. `GET /api/calls` poskytuje seznam a stránkování. `GET /api/calls/<key>` poskytuje detail. `GET /api/export.csv` exportuje hovory, volitelně s přepisy při `includeTranscript=1`. `GET /api/export/report.csv` exportuje souhrn za aktuální období včetně počtů podle témat, důvodů a požadavků. Filtry zahrnují `dataset`, `from`, `to`, `branch`, `topic`, `sentiment`, `q` a výběr z mapy pomocí `labelType` a `label`.
 
 ## Ověření
 
@@ -81,4 +82,4 @@ Pro analýzu už hotových přepisů stačí nastavit `OLLAMA_URL` a `OLLAMA_MOD
 node --test
 ```
 
-Testy ověřují ruční import, doplnění WAV, export a zpracování přes simulované odpovědi Whisperu a Ollama. Test konektoru používá simulovaný VoIPmonitor včetně rozšířeného CDR API. Ověření proti konkrétní instalaci vyžaduje její adresu a místní účet.
+Testy ověřují ruční import, mapování CSV, doplnění WAV, agregace v reportu a integrace se simulovanými odpověďmi poskytovatelů. Test VoIPmonitoru používá simulovanou instalaci včetně rozšířeného CDR API.

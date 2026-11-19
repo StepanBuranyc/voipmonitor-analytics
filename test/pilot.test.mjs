@@ -6,8 +6,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { makeServer } from "../server.mjs";
 import { modelConfig } from "../lib/models.mjs";
+import { providerConfigs, requestAnalysis } from "../lib/providers.mjs";
 import { parseCdrCsv } from "../lib/cdr.mjs";
 import { readWave } from "../lib/wave.mjs";
+import { readCsv, suggestCsvMapping, validateCsvMapping } from "../public/csv.mjs";
 
 const sample = (file) => readFileSync(new URL(`../examples/${file}`, import.meta.url));
 const bytes = (text) => Buffer.from(text, "utf8");
@@ -49,8 +51,61 @@ test("CDR converts Prague time and VoIPmonitor metric units", () => {
   assert.equal(calls[0].startedAt, "2026-10-10 01:58:00");
   assert.deepEqual([calls[0].mos, calls[0].jitter, calls[0].loss, calls[0].duration], [4.3, 4.1, 1.25, 0]);
   assert.equal(calls[0].branch, "Praha; centrum");
-  assert.throws(() => modelConfig({ OLLAMA_URL: "https://example.org" }), /localhost/);
-  assert.throws(() => modelConfig({ OLLAMA_MODELS: "model:20b-cloud" }), /lokálních/);
+  assert.throws(() => modelConfig({ OLLAMA_URL: "file:///etc/example" }), /HTTP/);
+  assert.throws(() => modelConfig({ OLLAMA_MODELS: "model:20b-cloud" }), /cloudový model/);
+  assert.equal(modelConfig({ CUSTOM_AI_URL: "https://example.test/v1/", CUSTOM_AI_MODELS: "private-model" })
+    .providers.find(({ id }) => id === "custom").endpoint, "https://example.test/v1/chat/completions");
+});
+
+test("CSV preview recognizes quoted separators and applies the same index mapping as import", () => {
+  const csv = bytes('"Ignorovat; toto","Interní ID","Komentář","Oddělení","Interní ID"\r\n' +
+    '"zůstane venku","MAP-10","Volající uvedl\r\ntermín.","Servis","druhé ID"\r\n');
+  const [headers, record] = readCsv(csv, { limit: 2 });
+  assert.equal(headers[0], "Ignorovat; toto");
+  assert.equal(record[2], "Volající uvedl\r\ntermín.");
+  assert.deepEqual(suggestCsvMapping(["cdr_id", "cdr_started_at", "transcription", "Other"]), ["cdrid", "calldate", "transcript", ""]);
+  assert.throws(() => validateCsvMapping(["cdrid", "calldate", "cdrid", "", ""], 5), /nejvýše/);
+  const { calls, issues } = parseCdrCsv(csv, () => ({ startedAt: "2026-10-31", sensor: "7" }),
+    ["", "cdrid", "transcript", "context", ""]);
+  assert.deepEqual(issues, []);
+  assert.equal(calls[0].cdrId, "MAP-10");
+  assert.equal(calls[0].sensor, "7");
+  assert.deepEqual(calls[0].context, [{ label: "Oddělení", value: "Servis" }]);
+  assert.doesNotMatch(JSON.stringify(calls), /zůstane venku|druhé ID/);
+});
+
+test("cloud and own-service adapters use intended endpoints and structured output", async () => {
+  const env = {
+    OPENAI_API_KEY: "openai-fixture", GEMINI_API_KEY: "gemini-fixture", XAI_API_KEY: "xai-fixture", GROQ_API_KEY: "groq-fixture",
+    CUSTOM_AI_URL: "https://models.example.test/proxy/v1", CUSTOM_AI_MODELS: "custom-fixture", CUSTOM_AI_API_KEY: "custom-key",
+  };
+  const urls = {
+    openai: "https://api.openai.com/v1/responses",
+    gemini: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    xai: "https://api.x.ai/v1/chat/completions",
+    groq: "https://api.groq.com/openai/v1/chat/completions",
+    custom: "https://models.example.test/proxy/v1/chat/completions",
+  };
+  const schema = { type: "object", required: ["theme"], properties: { theme: { type: "string" } }, additionalProperties: false };
+  const messages = [{ role: "user", content: "Fiktivní přepis" }];
+  for (const provider of providerConfigs(env).filter(({ models }) => models.length)) {
+    const result = await requestAnalysis(provider, provider.models[0], messages, schema, async (endpoint, options) => {
+      assert.equal(endpoint, urls[provider.id]);
+      assert.equal(options.headers.Authorization, `Bearer ${provider.id === "custom" ? "custom-key" : provider.id + "-fixture"}`);
+      assert.equal(options.redirect, "error");
+      const payload = JSON.parse(options.body);
+      if (provider.id === "openai") {
+        assert.equal(payload.store, false);
+        assert.deepEqual(payload.input, messages);
+        assert.deepEqual(payload.text.format.schema, schema);
+        return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text: '{"theme":"fakturace"}' }] }] });
+      }
+      assert.deepEqual(payload.messages, messages);
+      assert.deepEqual(payload.response_format.json_schema.schema, schema);
+      return Response.json({ choices: [{ message: { content: '{"theme":"fakturace"}' } }] });
+    });
+    assert.equal(result, '{"theme":"fakturace"}');
+  }
 });
 
 test("import, audio range, local model queue, reporting and export work through HTTP", async (t) => {
@@ -78,8 +133,8 @@ test("import, audio range, local model queue, reporting and export work through 
         assert.equal(body.format.type, "object");
         assert.match(body.messages.at(-1).content, /dvojitá položka/);
         res.end(JSON.stringify({ message: { content: JSON.stringify({
-          title: "Reklamace faktury", topic: "billing", sentiment: "negative", summary: "Volající reklamuje fakturu.",
-          request: "Opravit fakturu.", outcome: "V hovoru neuvedeno", evidence: [0],
+          title: "Reklamace faktury", reason: "Chybná faktura", topic: "billing", sentiment: "negative", summary: "Volající reklamuje fakturu.",
+          request: "Opravit fakturu.", requestLabel: "Oprava faktury", outcome: "V hovoru neuvedeno", evidence: [0],
         }) } }));
       } else {
         res.writeHead(404).end();
@@ -175,14 +230,14 @@ test("external CSV transcripts can enrich a CDR or form new calls and run with O
     for await (const part of req) parts.push(part);
     const { messages } = JSON.parse(Buffer.concat(parts));
     const transcript = messages.at(-1).content;
-    if (req.url !== "/api/chat" || !/Rozbitý modem|Zákazník potvrzuje/.test(transcript)) {
+    if (req.url !== "/api/chat" || !/Rozbitý modem|Zákazník potvrzuje|dvakrát stejný poplatek/.test(transcript)) {
       res.writeHead(400).end();
       return;
     }
     analyzed += 1;
     res.end(JSON.stringify({ message: { content: JSON.stringify({
-      title: "Externí přepis", topic: "setup", sentiment: "neutral", summary: "Souhrn externího přepisu.",
-      request: "Nastavit modem.", outcome: "Potvrzeno.", evidence: [0],
+      title: "Externí přepis", reason: "Nastavení modemu", topic: "setup", sentiment: "neutral", summary: "Souhrn externího přepisu.",
+      request: "Nastavit modem.", requestLabel: "Změna nastavení", outcome: "Potvrzeno.", evidence: [0],
     }) } }));
   });
   const ollamaUrl = await listen(ollama);
@@ -195,9 +250,10 @@ test("external CSV transcripts can enrich a CDR or form new calls and run with O
     assert.equal(response.status, 200);
     return response.json();
   };
-  async function upload(csv, audios = []) {
+  async function upload(csv, audios = [], mapping) {
     const form = new FormData();
     form.append("cdr", new Blob([csv]), "source.csv");
+    if (mapping) form.set("mapping", JSON.stringify(mapping));
     for (const [name, data] of audios) form.append("wav", new Blob([data]), name);
     const response = await fetch(url + "/api/import", { method: "POST", body: form });
     const outcome = await response.json();
@@ -244,8 +300,29 @@ test("external CSV transcripts can enrich a CDR or form new calls and run with O
   }
   assert.equal(report.current.analyzed, 2);
   assert.equal(analyzed, 2);
+  assert.deepEqual(report.topicMap[0].reasons, [{ label: "Nastavení modemu", count: 2 }]);
+  assert.deepEqual(report.topicMap[0].requests, [{ label: "Změna nastavení", count: 2 }]);
+  assert.equal((await get("/api/calls?topic=setup&labelType=reason&label=nastaveni-modemu")).total, 2);
+  const summary = await (await fetch(url + "/api/export/report.csv")).text();
+  assert.match(summary, /"problém";"Nastavení služby";"Nastavení modemu";"2"/);
+  assert.match(summary, /"požadavek";"Nastavení služby";"Změna nastavení";"2"/);
+  assert.doesNotMatch(summary, /Čeká se na výměnu/);
+  const sampleRun = await fetch(url + "/api/analyze/sample", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: '{"provider":"ollama","model":"text-only"}',
+  });
+  assert.equal(sampleRun.status, 200);
+  assert.equal((await sampleRun.json()).provider, "ollama");
+  assert.equal((await get("/api/report")).current.analyzed, 2);
   const exported = await (await fetch(url + "/api/export.csv?includeTranscript=1&q=rozbity")).text();
   assert.match(exported, /Čeká se na výměnu/);
+
+  const mapped = await upload('Moje ID;Údaj;Hlavička;Text\nMAP-11;Tým B;2026-10-31;Hovor o zboží\n',
+    [], ["cdrid", "context", "calldate", "transcript"]);
+  assert.equal(mapped.transcripts, 1);
+  const byContext = await get("/api/calls?q=tým+b");
+  assert.equal(byContext.total, 1);
+  const mappedDetail = await get(`/api/calls/${byContext.calls[0].key}`);
+  assert.deepEqual(mappedDetail.context, [{ label: "Údaj", value: "Tým B" }]);
 
   const largeCsv = "cdr_id;calldate;transcript\n" + Array.from({ length: 210 }, (_, index) =>
     `LARGE-${index};${day};${"x".repeat(10_500)}\n`).join("");
