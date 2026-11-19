@@ -120,10 +120,21 @@ function sendAudio(req, res, audio) {
   });
 }
 
+function getPublicOrigin(value) {
+  if (!value) return null;
+  const url = new URL(value);
+  if (!["http:", "https:"].includes(url.protocol) || url.pathname !== "/" ||
+      url.username || url.password || url.search || url.hash) {
+    throw new Error("VOIP_PUBLIC_ORIGIN musí obsahovat samotný původ HTTP(S), včetně případného portu.");
+  }
+  return url;
+}
+
 export function makeServer({
   database = process.env.VOIP_DB || fileURLToPath(new URL("data/pilot.sqlite", root)),
   env = process.env,
 } = {}) {
+  const publicOrigin = getPublicOrigin(env.VOIP_PUBLIC_ORIGIN);
   const config = modelConfig(env);
   const store = openStore(database);
   const worker = createWorker(store, config);
@@ -147,8 +158,11 @@ export function makeServer({
     try {
       const port = server.address().port;
       const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
-      if (!allowed.includes(req.headers.host)) throw new HttpError(403, "Tato aplikace je dostupná pouze na localhost.");
-      const origin = `http://${req.headers.host}`;
+      const matchesPublicOrigin = publicOrigin && req.headers.host === publicOrigin.host;
+      if (!matchesPublicOrigin && !allowed.includes(req.headers.host)) {
+        throw new HttpError(403, "Tato adresa neodpovídá konfiguraci aplikace.");
+      }
+      const origin = matchesPublicOrigin ? publicOrigin.origin : `http://${req.headers.host}`;
       const url = new URL(req.url, origin);
       if (url.origin !== origin || (req.headers.origin && req.headers.origin !== origin) ||
           req.headers["sec-fetch-site"] === "cross-site") {
@@ -236,10 +250,14 @@ export function makeServer({
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT || 4196);
+  const host = process.env.VOIP_LISTEN_HOST || "127.0.0.1";
+  if (host !== "127.0.0.1" && !process.env.VOIP_PUBLIC_ORIGIN) {
+    throw new Error("Při naslouchání mimo loopback nastavte VOIP_PUBLIC_ORIGIN.");
+  }
   const server = makeServer();
   server.on("error", (error) => {
     console.error(`Server se nepodařilo spustit: ${error.message}`);
     process.exitCode = 1;
   });
-  server.listen(port, "127.0.0.1", () => console.log(`Přehled hovorů běží na http://127.0.0.1:${server.address().port}/`));
+  server.listen(port, host, () => console.log(`Přehled hovorů naslouchá na ${host}:${server.address().port}.`));
 }

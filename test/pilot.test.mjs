@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { makeServer } from "../server.mjs";
@@ -17,6 +17,27 @@ async function listen(server) {
   await once(server, "listening");
   return `http://127.0.0.1:${server.address().port}`;
 }
+
+test("Docker deployment permits its configured origin and rejects other hosts and origins", async (t) => {
+  const publicHost = "pilot.example.test:4196";
+  const publicOrigin = `http://${publicHost}`;
+  const app = makeServer({ database: ":memory:", env: { VOIP_PUBLIC_ORIGIN: publicOrigin } });
+  const url = await listen(app);
+  t.after(() => app.close());
+  const status = (headers) => new Promise((resolve, reject) => {
+    const request = httpRequest(url + "/api/config", { headers }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  assert.equal(await status({ Host: publicHost, Origin: publicOrigin }), 200);
+  assert.equal(await status({ Host: publicHost, Origin: "http://other.example.test" }), 403);
+  assert.equal(await status({ Host: "other.example.test" }), 403);
+  assert.equal(await status({ Host: publicHost, "Sec-Fetch-Site": "cross-site" }), 403);
+  assert.equal(await status({}), 200);
+});
 
 test("CDR converts Prague time and VoIPmonitor metric units", () => {
   const data = bytes("ID;calldate;mos_min_mult10;a_avgjitter_mult10;b_avgjitter_mult10;packet_loss_perc_mult1000;connect_duration;duration;branch\r\n" +

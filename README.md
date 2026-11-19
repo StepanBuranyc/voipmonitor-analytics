@@ -10,7 +10,19 @@ Vyžaduje Node.js 24 nebo novější. Instalace balíčků není potřeba.
 node --env-file-if-exists=.env.local server.mjs
 ```
 
-Otevřete [http://127.0.0.1:4196/](http://127.0.0.1:4196/). Na Windows lze také spustit `spustit-pilot.cmd`. Server přijímá požadavky pouze na loopback adrese. Databáze SQLite včetně nahrávek se ukládá do `data/pilot.sqlite`. Volitelně lze nastavit `VOIP_DB` a `PORT`. Pilot je určený pro lokální provoz jedním uživatelem.
+Otevřete [http://127.0.0.1:4196/](http://127.0.0.1:4196/). Na Windows lze také spustit `spustit-pilot.cmd`. Výchozí adresa serveru je loopback. Databáze SQLite včetně nahrávek se ukládá do `data/pilot.sqlite`. Volitelně lze nastavit `VOIP_DB` a `PORT`. Pilot je určený pro provoz jedním uživatelem v důvěryhodném prostředí.
+
+### Docker Compose
+
+V kořeni repozitáře spusťte následující příkaz. Docker uloží SQLite a audio do pojmenovaného svazku `voipmonitor-analytics_pilot-data`.
+
+```sh
+docker compose up -d --build --wait
+```
+
+Pro otevření z místní sítě nastavte `VOIP_BIND_IP` na LAN adresu hostitele v souboru `.env` vedle `compose.yaml`. Volitelná proměnná `VOIP_WEB_PORT` mění port na hostiteli. Webový pilot nemá vlastní přihlašování. Pro provoz přes reverzní proxy použijte externí adresu v `VOIP_PUBLIC_ORIGIN` a zachovejte původní hlavičku Host.
+
+Nastavení konektoru patří do `.env.local`. Po jeho změně použijte `docker compose up -d --force-recreate --wait`. Po aktualizaci kódu použijte `docker compose up -d --build --wait`. Svazek se při obnově kontejneru zachová.
 
 ## Příprava dat
 

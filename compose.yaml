@@ -1,0 +1,26 @@
+name: voipmonitor-analytics
+
+services:
+  app:
+    build: .
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      PORT: "4196"
+      VOIP_LISTEN_HOST: 0.0.0.0
+      VOIP_PUBLIC_ORIGIN: "${VOIP_PUBLIC_ORIGIN:-http://${VOIP_BIND_IP:-127.0.0.1}:${VOIP_WEB_PORT:-4196}}"
+    ports:
+      - "${VOIP_BIND_IP:-127.0.0.1}:${VOIP_WEB_PORT:-4196}:4196"
+    volumes:
+      - pilot-data:/app/data
+
+volumes:
+  pilot-data:
