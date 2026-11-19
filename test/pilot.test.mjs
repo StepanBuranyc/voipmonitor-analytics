@@ -123,7 +123,7 @@ test("import, audio range, local model queue, reporting and export work through 
   const cdr = sample("cdr.csv");
   const wav = sample("VPM-1001.wav");
   const initial = await upload(cdr);
-  assert.deepEqual(initial, { added: 2, existing: 0, matched: 0, missing: 2, issues: [] });
+  assert.deepEqual(initial, { added: 2, existing: 0, matched: 0, missing: 2, transcripts: 0, issues: [] });
   const again = await upload(cdr, [["VPM-1001.wav", wav], ["other.wav", wav]]);
   assert.deepEqual([again.added, again.existing, again.matched, again.missing], [0, 2, 1, 1]);
   assert.equal(again.issues[0].file, "other.wav");
@@ -168,6 +168,92 @@ test("import, audio range, local model queue, reporting and export work through 
   assert.doesNotMatch(csv, /VPM-1002/);
 });
 
+test("external CSV transcripts can enrich a CDR or form new calls and run with Ollama alone", async (t) => {
+  let analyzed = 0;
+  const ollama = createServer(async (req, res) => {
+    const parts = [];
+    for await (const part of req) parts.push(part);
+    const { messages } = JSON.parse(Buffer.concat(parts));
+    const transcript = messages.at(-1).content;
+    if (req.url !== "/api/chat" || !/Rozbitý modem|Zákazník potvrzuje/.test(transcript)) {
+      res.writeHead(400).end();
+      return;
+    }
+    analyzed += 1;
+    res.end(JSON.stringify({ message: { content: JSON.stringify({
+      title: "Externí přepis", topic: "setup", sentiment: "neutral", summary: "Souhrn externího přepisu.",
+      request: "Nastavit modem.", outcome: "Potvrzeno.", evidence: [0],
+    }) } }));
+  });
+  const ollamaUrl = await listen(ollama);
+  t.after(() => ollama.close());
+  const app = makeServer({ database: ":memory:", env: { OLLAMA_URL: ollamaUrl, OLLAMA_MODELS: "text-only" } });
+  const url = await listen(app);
+  t.after(() => app.close());
+  const get = async (path) => {
+    const response = await fetch(url + path);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  async function upload(csv, audios = []) {
+    const form = new FormData();
+    form.append("cdr", new Blob([csv]), "source.csv");
+    for (const [name, data] of audios) form.append("wav", new Blob([data]), name);
+    const response = await fetch(url + "/api/import", { method: "POST", body: form });
+    const outcome = await response.json();
+    assert.equal(response.status, 200, outcome.error);
+    return outcome;
+  }
+  const config = await get("/api/config");
+  assert.equal(config.localModels, true);
+  assert.equal(config.localWhisper, false);
+  const day = "2026-10-31";
+  await upload("cdrId;calldate;id_sensor\n307;2026-10-31 11:00:00;7\n401;2026-10-31 12:00:00;7\n",
+    [["401.wav", sample("VPM-1001.wav")]]);
+  const csv = "call_id;cdr_started_at;transcription\n" +
+    '307;;"Rozbitý modem\nČeká se na výměnu."\n' +
+    'EXT-101;2026-10-31 09:00:00+00;"Zákazník potvrzuje nastavení."\n' +
+    'NEZNAMY;;"Chybí datum."\n';
+  const imported = await upload(csv);
+  assert.deepEqual([imported.added, imported.existing, imported.transcripts], [1, 1, 2]);
+  assert.match(imported.issues[0].message, /data|datum/);
+  const repeat = await upload(csv);
+  assert.deepEqual([repeat.added, repeat.existing, repeat.transcripts], [0, 2, 0]);
+  const conflict = await upload("cdr_id;transcript\n307;Jiný přepis\n");
+  assert.match(conflict.issues[0].message, /jiný přepis/);
+
+  const { calls, total } = await get("/api/calls?q=rozbity");
+  assert.equal(total, 1);
+  const existing = await get(`/api/calls/${calls[0].key}`);
+  assert.equal(existing.sensor, "7");
+  assert.equal(existing.hasAudio, false);
+  assert.equal(existing.transcriptSource, "csv");
+  assert.deepEqual(existing.transcript, [{ seconds: null, end: null, text: "Rozbitý modem\nČeká se na výměnu." }]);
+  assert.equal((await get("/api/calls?q=EXT-101")).calls[0].startedAt, day + " 10:00:00");
+  assert.equal((await get("/api/report")).queue.waitingWithTranscript, 2);
+  const run = await fetch(url + "/api/analyze", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: '{"model":"text-only"}',
+  });
+  assert.equal(run.status, 202);
+  assert.deepEqual(await run.json(), { queued: 2 });
+  let report;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    report = await get("/api/report");
+    if (report.current.analyzed === 2) break;
+    await sleep(30);
+  }
+  assert.equal(report.current.analyzed, 2);
+  assert.equal(analyzed, 2);
+  const exported = await (await fetch(url + "/api/export.csv?includeTranscript=1&q=rozbity")).text();
+  assert.match(exported, /Čeká se na výměnu/);
+
+  const largeCsv = "cdr_id;calldate;transcript\n" + Array.from({ length: 210 }, (_, index) =>
+    `LARGE-${index};${day};${"x".repeat(10_500)}\n`).join("");
+  assert.ok(Buffer.byteLength(largeCsv) > 2 * 1024 * 1024);
+  const large = await upload(largeCsv);
+  assert.equal(large.transcripts, 210);
+});
+
 test("VoIPmonitor import reads CDRs and QoS by date and sensor, then retries absent audio without duplicates", async (t) => {
   let audioAvailable = false;
   let audioRequests = 0;
@@ -184,7 +270,9 @@ test("VoIPmonitor import reads CDRs and QoS by date and sensor, then retries abs
       const body = Buffer.concat(parts).toString("utf8");
       const reply = (data) => res.end(JSON.stringify(data));
       if (request.pathname === "/monitor/php/api.php") {
-        const command = JSON.parse(body);
+        const command = Object.fromEntries(new URLSearchParams(body));
+        command.params = JSON.parse(command.params);
+        assert.match(req.headers["content-type"], /^application\/x-www-form-urlencoded/);
         assert.equal(command.user, "pilot-user");
         assert.equal(command.password, "SECRET");
         if (command.task === "getVoipCalls") {
@@ -227,7 +315,7 @@ test("VoIPmonitor import reads CDRs and QoS by date and sensor, then retries abs
   const remoteUrl = await listen(remote);
   t.after(() => remote.close());
   const app = makeServer({ database: ":memory:", env: {
-    VOIPMONITOR_URL: remoteUrl + "/monitor/php/api.php", VOIPMONITOR_USER: "pilot-user",
+    VOIPMONITOR_URL: remoteUrl + "/monitor/admin.php", VOIPMONITOR_USER: "pilot-user",
     VOIPMONITOR_PASSWORD: "SECRET", VOIPMONITOR_QOS: "1",
   } });
   const appUrl = await listen(app);

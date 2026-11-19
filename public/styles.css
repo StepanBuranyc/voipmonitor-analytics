@@ -216,6 +216,8 @@ dialog::backdrop { background: #17182f70; }
 .detail-transcript { list-style: none; margin: .4rem 0 0; padding: 0; display: grid; gap: .42rem; }
 .detail-transcript li { display: grid; grid-template-columns: 3.5rem minmax(0,1fr); gap: .45rem; align-items: start; color: #3d405a; background: #f7f7fb; padding: .55rem .66rem; border-radius: .55rem; font-size: .94rem; }
 .detail-transcript li.evidence { background: #f1edff; }
+.detail-transcript li.untimed { grid-template-columns: minmax(0,1fr); }
+.transcript-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .detail-transcript strong { display: block; font-size: .82rem; color: #4b3d85; }
 .detail-transcript button { align-self: start; }
 .detail-actions { margin-top: .6rem; display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }

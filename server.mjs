@@ -11,7 +11,7 @@ import { topics } from "./public/catalog.mjs";
 const MiB = 1024 * 1024;
 const maxUpload = 96 * MiB;
 const maxWav = 32 * MiB;
-const maxCsv = 2 * MiB;
+const maxCsv = 64 * MiB;
 const root = new URL("./", import.meta.url);
 const staticFiles = new Map([
   ["/", ["public/index.html", "text/html; charset=utf-8"]],
@@ -20,6 +20,7 @@ const staticFiles = new Map([
   ["/chart.mjs", ["public/chart.mjs", "text/javascript; charset=utf-8"]],
   ["/catalog.mjs", ["public/catalog.mjs", "text/javascript; charset=utf-8"]],
   ["/examples/cdr.csv", ["examples/cdr.csv", "text/csv; charset=utf-8"]],
+  ["/examples/transcripts.csv", ["examples/transcripts.csv", "text/csv; charset=utf-8"]],
   ["/examples/VPM-1001.wav", ["examples/VPM-1001.wav", "audio/wav"]],
 ]);
 
@@ -80,7 +81,7 @@ async function receiveImport(req, url, store) {
   if (!(cdr instanceof File) || !cdr.size || !/\.csv$/i.test(cdr.name) || form.getAll("cdr").length !== 1) {
     throw new InputError("Přiložte jeden CDR CSV soubor.");
   }
-  if (cdr.size > maxCsv) throw new HttpError(413, "CDR CSV může mít nejvýše 2 MiB.");
+  if (cdr.size > maxCsv) throw new HttpError(413, "CSV může mít nejvýše 64 MiB.");
   const files = form.getAll("wav");
   if (files.length > 60) throw new InputError("Jeden import přijme nejvýše 60 nahrávek.");
   const audio = new Map();
@@ -100,7 +101,7 @@ async function receiveImport(req, url, store) {
       audio.set(name, Buffer.from(await file.arrayBuffer()));
     }
   }
-  const { calls, issues } = parseCdrCsv(new Uint8Array(await cdr.arrayBuffer()));
+  const { calls, issues } = parseCdrCsv(new Uint8Array(await cdr.arrayBuffer()), store.findCall);
   return store.importBatch(calls, audio, [...issues, ...fileIssues]);
 }
 
@@ -177,7 +178,9 @@ export function makeServer({
         return send(res, 200, bytes, type, path.startsWith("/examples/") ?
           { "Content-Disposition": `attachment; filename="${path.split("/").at(-1)}"` } : {});
       }
-      if (method === "GET" && path === "/api/config") return json(res, 200, { localModels: worker.enabled, models: worker.models });
+      if (method === "GET" && path === "/api/config") {
+        return json(res, 200, { localModels: worker.enabled, localWhisper: worker.canTranscribe, models: worker.models });
+      }
       if (path === "/api/voipmonitor") {
         if (method === "GET") return json(res, 200, { ...voip.status(), configError: voipError ?? null });
         if (method === "POST") {
@@ -189,12 +192,12 @@ export function makeServer({
       if (method === "POST" && path === "/api/import") return json(res, 200, await receiveImport(req, url, store));
       if (method === "POST" && path === "/api/analyze") {
         const payload = await readJson(req);
-        if (!worker.enabled) throw new HttpError(409, "Nastavte lokální Whisper a Ollama podle návodu k pilotu.");
+        if (!worker.enabled) throw new HttpError(409, "Nastavte lokální Ollama a model pro analýzu.");
         if (!worker.models.includes(payload.model)) throw new InputError("Vyberte některý z nakonfigurovaných modelů.");
         if (payload.key !== undefined && (typeof payload.key !== "string" || !/^[0-9a-f]{32}$/.test(payload.key))) {
           throw new InputError("Neplatný identifikátor hovoru.");
         }
-        const queued = store.queue(payload.model, payload.key);
+        const queued = store.queue(payload.model, payload.key, worker.canTranscribe);
         worker.run();
         return json(res, 202, { queued });
       }

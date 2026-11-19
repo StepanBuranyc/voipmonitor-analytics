@@ -7,5 +7,6 @@
 !public/**
 !examples/
 !examples/cdr.csv
+!examples/transcripts.csv
 !examples/recording.json
 !examples/VPM-1001.wav

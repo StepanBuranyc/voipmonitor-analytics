@@ -33,11 +33,15 @@ Nastavení konektoru patří do `.env.local`. Po jeho změně použijte `docker 
 
 Volitelná pole jsou `id_sensor`, `branch`, `connect_duration` v sekundách, `mos` na škále 0–5, `jitter_ms` a `packet_loss_pct`. Při absenci `connect_duration` použije import `duration`. Přijímá i sloupce VoIPmonitoru `mos_min_mult10`, `a_avgjitter_mult10`, `b_avgjitter_mult10` a `packet_loss_perc_mult1000`. Pokud není uvedený `jitter_ms`, vezme se vyšší z dostupných průměrů obou směrů. Prázdné hodnoty se zachovají jako chybějící.
 
-Příklad je v `examples/cdr.csv` a `examples/VPM-1001.wav`. CSV obsahuje druhý záznam bez WAV, který umožňuje ověřit vyhodnocení pokrytí. Limity jedné dávky jsou 5 000 řádků CDR, 60 WAV a 96 MiB včetně hlaviček. Jeden WAV má limit 32 MiB a 60 minut.
+Příklad je v `examples/cdr.csv` a `examples/VPM-1001.wav`. CSV obsahuje druhý záznam bez WAV, který umožňuje ověřit vyhodnocení pokrytí. CSV může mít 64 MiB a 50 000 řádků. Pro jednu dávku platí nejvýše 60 WAV a 96 MiB včetně hlaviček. Jeden WAV má limit 32 MiB a 60 minut.
+
+### Hotové přepisy z CSV
+
+Uložte jeden hovor na řádek podle vzoru `examples/transcripts.csv`. Použijte `cdr_id`, `calldate` a `transcript`. Lze použít i názvy `call_id`, `started_at`, `cdr_started_at`, `timestamp`, `transcription` nebo `prepis`. U už načteného hovoru stačí ID a přepis. Pokud se stejné ID vyskytuje na více sondách, doplňte `id_sensor`. Importovaný přepis můžete otevřít a vyhledat ihned. Pro vytvoření souhrnu, tématu a sentimentu připojte model v Ollama.
 
 ## Přímý import z VoIPmonitoru
 
-Zkopírujte `pilot.env.example` do `.env.local`. Nastavte adresu GUI včetně případného podadresáře, například `https://voipmonitor.example.cz/voipmonitor`, a místní účet VoIPmonitoru s oprávněním číst CDR a nahrávky. Do `VOIPMONITOR_URL` lze zadat také rovnou celou adresu `php/api.php`. Server používá přihlašovací údaje pouze v těle požadavků. Pro připojení použijte HTTPS. Soubor `.env.local` a databáze s audiem jsou vyloučené z Gitu.
+Zkopírujte `pilot.env.example` do `.env.local`. Nastavte adresu GUI včetně případného podadresáře, například `https://voipmonitor.example.cz/voipmonitor`, a místní účet VoIPmonitoru s oprávněním číst CDR a nahrávky. Do `VOIPMONITOR_URL` lze zadat také adresu zakončenou `admin.php`, `index.php` nebo `php/api.php`. Server posílá přihlašovací údaje v těle formulářového POST požadavku. Pro připojení použijte HTTPS. Soubor `.env.local` a databáze s audiem jsou vyloučené z Gitu.
 
 Po restartu otevřete **Import dat → Přímý import z VoIPmonitoru** a vyberte období až 31 dní. Volitelně zadejte ID sondy. Volba **Stáhnout WAV** přidá dostupné nahrávky spojených hovorů v podobě uložené ve VoIPmonitoru. Pro anonymizovaný pilot lze připojit testovací instalaci s odpovídajícími nahrávkami. Základní import ukládá ID, čas, sondu a dostupné metriky. Pole s telefonními čísly, SIP Call-ID a IP adresami se neukládají.
 
@@ -64,6 +68,8 @@ node --env-file-if-exists=.env.local server.mjs
 ```
 
 V **Hovory** zvolte model a spusťte analýzu čekajících nahrávek. U jednotlivého hovoru lze zvolit jiný model. Přepis zůstane uložený i při selhání souhrnu. Whisper dostává nahrávku převedenou na mono 16 kHz a Ollama dostává přepis s čísly segmentů. Sentiment je odhad z obsahu rozhovoru. U témat a trendů se počítá s posledním uloženým výsledkem a s ručními opravami.
+
+Pro analýzu už hotových přepisů stačí nastavit `OLLAMA_URL` a `OLLAMA_MODELS`. Whisper se použije pro vytvoření přepisu z WAV.
 
 ## Data pro reporty
 

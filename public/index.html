@@ -36,7 +36,7 @@
       </div>
       <div class="page-actions">
         <button type="button" class="button button-outline" id="open-export"><span class="icon icon-download" aria-hidden="true"></span>Export CSV</button>
-        <button type="button" class="button button-primary" id="open-import"><span class="icon icon-plus" aria-hidden="true"></span>Importovat data</button>
+        <button type="button" class="button button-primary" id="open-import"><span class="icon icon-plus" aria-hidden="true"></span>Načíst hovory</button>
       </div>
     </header>
     <p id="global-status" class="notice" role="status" hidden></p>
@@ -85,12 +85,12 @@
         <div id="voip-result" class="voip-result" role="status" hidden></div>
       </div>
       <div class="card import-card">
-        <h2>Přidat soubory</h2>
-        <p>Vložte CSV a odpovídající anonymizované nahrávky. Pokud některé nahrávky chybí, můžete je doplnit později.</p>
+        <h2>CSV s hotovými přepisy nebo CDR</h2>
+        <p>Přepisy z jiného nástroje lze nahrát samostatně. Nahrávky WAV jsou volitelné.</p>
         <form id="import-form">
           <label class="file-field">
             <span class="file-icon icon icon-file" aria-hidden="true"></span>
-            <span><strong>Hovory z VoIPmonitoru</strong><small>Jeden CSV soubor v UTF-8</small></span>
+            <span><strong>Soubor CSV</strong><small>UTF-8, nejvýše 64 MiB a 50 000 řádků</small></span>
             <input type="file" name="cdr" accept=".csv,text/csv" required>
           </label>
           <label class="file-field">
@@ -99,20 +99,20 @@
             <input type="file" name="wav" accept=".wav,audio/wav" multiple>
           </label>
           <p class="import-limit">Nejvýše 32 MiB na WAV a 96 MiB na dávku.</p>
-          <button type="submit" class="button button-primary" id="submit-import">Spárovat a importovat</button>
+          <button type="submit" class="button button-primary" id="submit-import">Importovat soubory</button>
         </form>
         <div id="import-result" role="status" hidden></div>
       </div>
 
       <div class="card import-guide">
         <h2>Formát dat</h2>
-        <p>CSV musí obsahovat <code>cdrId</code> a <code>calldate</code>. Pro nahrávku použijte stejný název jako ID hovoru, například <code>VPM-1001.wav</code>. Jiný název uveďte v poli <code>audio_file</code>.</p>
+        <p>Pro nový hovor uveďte <code>cdr_id</code> a <code>calldate</code>. Hotový přepis patří do <code>transcript</code>. K dříve načtenému hovoru stačí přepis a stejné ID.</p>
         <div class="field-guide">
-          <span>Povinné</span><code>cdrId, calldate</code>
-          <span>Volitelné</span><code>audio_file, id_sensor, branch, connect_duration, mos, jitter_ms, packet_loss_pct</code>
+          <span>Přepis</span><code>cdr_id, calldate, transcript</code>
+          <span>Nahrávka</span><span>Použijte ID jako název WAV nebo uveďte název v <code>audio_file</code>.</span>
         </div>
-        <h3>Zkušební dvojice</h3>
-        <div class="sample-links"><a href="/examples/cdr.csv" download="cdr.csv">Stáhnout CSV</a><a href="/examples/VPM-1001.wav" download="VPM-1001.wav">Stáhnout WAV</a></div>
+        <h3>Ukázkové soubory</h3>
+        <div class="sample-links"><a href="/examples/transcripts.csv" download="transcripts.csv">Přepisy CSV</a><a href="/examples/cdr.csv" download="cdr.csv">CDR CSV</a><a href="/examples/VPM-1001.wav" download="VPM-1001.wav">Nahrávka WAV</a></div>
       </div>
     </section>
   </main>

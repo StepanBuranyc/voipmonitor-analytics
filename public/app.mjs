@@ -21,7 +21,7 @@ const elapsed = (seconds) => {
 const state = {
   view: "dashboard", dataset: "demo", from: "", to: "", branch: "",
   topic: "", sentiment: "", q: "", page: 1, report: null,
-  config: { localModels: false, models: [] }, model: "",
+  config: { localModels: false, localWhisper: false, models: [] }, model: "",
 };
 let revision = 0;
 let closeChart = null;
@@ -124,7 +124,7 @@ function renderDashboard(report) {
   closeChart?.();
   closeChart = null;
   if (!report.latest) {
-    dashboard.innerHTML = `<div class="card">${empty("Zatím bez importovaných hovorů", "Přidejte CDR a nahrávky z VoIPmonitoru.",
+    dashboard.innerHTML = `<div class="card">${empty("Zatím bez importovaných hovorů", "Načtěte hovory z VoIPmonitoru nebo vložte CSV s přepisy.",
       '<button type="button" class="button button-primary" data-view="import">Importovat data</button>')}</div>`;
     return;
   }
@@ -180,10 +180,11 @@ function renderModels(report) {
   }
   const config = state.config;
   if (!config.localModels) {
-    panel.innerHTML = '<div class="card models-panel"><div><strong>Lokální analýza čeká na nastavení</strong><p>Spusťte Whisper a Ollama podle návodu k pilotu. Import a přehrávání jsou dostupné.</p></div></div>';
+    panel.innerHTML = '<div class="card models-panel"><div><strong>Lokální analýza čeká na nastavení</strong><p>Pro analýzu přepisů připojte model v Ollama. Pro přepis z WAV připojte také Whisper.</p></div></div>';
     return;
   }
-  const { waiting, active } = report.queue;
+  const { active } = report.queue;
+  const waiting = config.localWhisper ? report.queue.waiting : report.queue.waitingWithTranscript;
   panel.innerHTML = `<div class="card models-panel"><div><strong>Lokální modely</strong>
      <p>Čeká na analýzu nebo opakování ${csNumber(waiting)} · Ve frontě a zpracování ${csNumber(active)}</p></div>
      <form id="queue-form"><label><span class="sr-only">Model pro analýzu</span><select id="model-select">
@@ -201,7 +202,7 @@ function renderCalls(data, report) {
     return;
   }
   if (!data.calls.length) {
-    pane.innerHTML = empty("Žádné hovory", report.latest ? "Změňte období nebo filtry." : "Začněte importem CDR a anonymizovaných WAV.",
+    pane.innerHTML = empty("Žádné hovory", report.latest ? "Změňte období nebo filtry." : "Načtěte hovory z VoIPmonitoru nebo vložte CSV s přepisy.",
       report.latest ? "" : '<button type="button" class="button button-primary" data-view="import">Importovat data</button>');
     return;
   }
@@ -260,7 +261,7 @@ function showView(view, focus = true) {
   tell();
   const heading = byId("page-title");
   heading.textContent = titleFor[view];
-  byId("page-note").textContent = view === "import" ? "Anonymizované nahrávky a výpis CDR" : sourceLabel[state.dataset];
+  byId("page-note").textContent = view === "import" ? "Hovory z VoIPmonitoru a přepisy z externích zdrojů" : sourceLabel[state.dataset];
   byId("period-filters").hidden = view === "import";
   byId("open-export").hidden = view === "import";
   byId("open-import").hidden = view === "import";
@@ -287,7 +288,8 @@ function renderDetail(call) {
   byId("detail-title").textContent = analysis?.title || `Hovor ${call.cdrId}`;
   byId("detail-meta").textContent = [call.cdrId, date(call.startedAt.slice(0, 10), longDay),
     call.startedAt.slice(11, 16), call.branch || (call.sensor ? `Sonda ${call.sensor}` : "")].filter(Boolean).join(" · ");
-  const canAnalyze = state.config.localModels && call.dataset === "pilot" && call.hasAudio &&
+  const hasAnalysisInput = call.transcript?.length || (call.hasAudio && state.config.localWhisper);
+  const canAnalyze = state.config.localModels && call.dataset === "pilot" && hasAnalysisInput &&
     ["ready", "error", "complete"].includes(call.status);
   byId("detail-content").innerHTML = `
     <div class="detail-badges">${call.topic ? `<span class="label-pill">${topics[call.topic]}</span>` : ""}
@@ -307,11 +309,13 @@ function renderDetail(call) {
       ${call.hasAudio ? `<audio id="recording" controls preload="metadata" src="/api/calls/${html(call.key)}/audio"></audio>` : "<p>Nahrávka není k dispozici.</p>"}
     </section>
     <section class="detail-block"><h3>Přepis</h3>
+      ${call.transcriptSource === "csv" ? '<span class="label-pill">Importováno z CSV</span>' : ""}
       ${call.transcript?.length ? `<ol class="detail-transcript">${call.transcript.map((segment, index) => {
         const evidence = analysis?.evidence?.includes(index);
-        return `<li${evidence ? ' class="evidence"' : ""}>
-          ${call.hasAudio ? `<button type="button" class="link-button" data-seek="${segment.seconds}" aria-label="Přehrát od ${elapsed(segment.seconds)}">${elapsed(segment.seconds)}</button>` : `<span>${elapsed(segment.seconds)}</span>`}
-          <div>${segment.speaker || evidence ? `<strong>${[segment.speaker, evidence ? "Podklad souhrnu" : ""].filter(Boolean).map(html).join(" · ")}</strong>` : ""}${html(segment.text)}</div></li>`;
+        const timed = Number.isFinite(segment.seconds);
+        return `<li class="${evidence ? "evidence" : ""}${timed ? "" : " untimed"}">
+          ${timed ? (call.hasAudio ? `<button type="button" class="link-button" data-seek="${segment.seconds}" aria-label="Přehrát od ${elapsed(segment.seconds)}">${elapsed(segment.seconds)}</button>` : `<span>${elapsed(segment.seconds)}</span>`) : ""}
+          <div>${segment.speaker || evidence ? `<strong>${[segment.speaker, evidence ? "Podklad souhrnu" : ""].filter(Boolean).map(html).join(" · ")}</strong>` : ""}<div class="transcript-text">${html(segment.text)}</div></div></li>`;
       }).join("")}</ol>` : "<p>Přepis zatím není k dispozici.</p>"}
       ${call.error ? `<p class="notice error" role="status">${html(call.error)}</p>` : ""}
       ${canAnalyze ? `<form id="detail-queue-form" class="detail-actions">
@@ -481,7 +485,7 @@ function renderVoipImport(data) {
   form.hidden = !data.configured;
   note.textContent = data.configError || (data.configured
     ? `Vyberte nejvýše ${data.maxDays} dnů. VoIPmonitor poskytne nahrávky ve své uložené podobě.`
-    : "Nastavte adresu GUI a místní účet VoIPmonitoru v .env.local podle README.");
+    : "Připojení čeká na adresu VoIPmonitoru a místní účet s přístupem k API. Údaje se nastavují na serveru.");
   const job = data.run;
   result.hidden = !job;
   byId("submit-voip").disabled = job?.state === "running";
@@ -551,16 +555,16 @@ byId("import-form").addEventListener("submit", async (event) => {
   submit.disabled = true;
   result.classList.remove("form-error");
   result.hidden = false;
-  result.textContent = "Páruji soubory…";
+  result.textContent = "Načítám soubory…";
   const payload = new FormData(form);
   if (!payload.get("wav")?.name) payload.delete("wav");
   try {
     const outcome = await api("/api/import", { method: "POST", body: payload });
     const hasCalls = outcome.added + outcome.existing > 0;
     if (hasCalls) setDataset("pilot");
-    result.innerHTML = `<strong>${hasCalls ? "Import dokončen" : "Import neobsahoval platné CDR"}</strong>
-      <p>Nové CDR ${csNumber(outcome.added)} · Již uložené ${csNumber(outcome.existing)} · S nahrávkou ${csNumber(outcome.matched)} · Bez nahrávky ${csNumber(outcome.missing)}</p>
-      ${outcome.issues.length ? `<ul>${outcome.issues.map((issue) => `<li>${html(issue.row ? `CDR řádek ${issue.row}` : issue.file)} · ${html(issue.message)}</li>`).join("")}</ul>` : ""}
+    result.innerHTML = `<strong>${hasCalls ? "Import dokončen" : "Import neobsahoval platné hovory"}</strong>
+      <p>Nové hovory ${csNumber(outcome.added)} · Již uložené ${csNumber(outcome.existing)} · Přidáno přepisů ${csNumber(outcome.transcripts)} · S nahrávkou ${csNumber(outcome.matched)}</p>
+      ${outcome.issues.length ? `<ul>${outcome.issues.map((issue) => `<li>${html(issue.row ? `Řádek CSV ${issue.row}` : issue.file)} · ${html(issue.message)}</li>`).join("")}</ul>` : ""}
       ${hasCalls ? '<button type="button" class="button button-primary" data-view="calls">Otevřít hovory</button>' : ""}`;
     if (hasCalls) form.reset();
   } catch (error) {
