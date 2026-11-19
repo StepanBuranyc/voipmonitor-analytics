@@ -1,0 +1,23 @@
+{
+  "duration": 21.382250000000003,
+  "segments": [
+    {
+      "seconds": 0.15,
+      "end": 7.1435,
+      "speaker": "Volající",
+      "text": "Dobrý den, na poslední faktuře mám dvakrát stejný poplatek. Můžete se na to prosím podívat?"
+    },
+    {
+      "seconds": 7.463500000000001,
+      "end": 16.3653125,
+      "speaker": "Podpora",
+      "text": "Dobrý den, vidím tu duplicitní položku. Zadala jsem opravu faktury a pošlu vám potvrzení do e-mailu."
+    },
+    {
+      "seconds": 16.685312500000002,
+      "end": 21.062250000000002,
+      "speaker": "Volající",
+      "text": "Děkuji, to mi pomůže. Počkám tedy na potvrzení."
+    }
+  ]
+}

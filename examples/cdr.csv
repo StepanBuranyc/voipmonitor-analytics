@@ -1,0 +1,3 @@
+cdrId;calldate;id_sensor;branch;connect_duration;mos;jitter_ms;packet_loss_pct
+VPM-1001;2026-10-31 15:42:00;1;Praha;21;4.25;5.8;0.2
+VPM-1002;2026-10-31 15:12:00;2;Brno;68;3.94;8.4;1.1

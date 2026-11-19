@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Přehled témat, sentimentu a kvality telefonních hovorů ve VoIPmonitoru.">
+  <meta name="theme-color" content="#17182f">
+  <title>VoIP analytika</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.mjs" type="module"></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Přeskočit na obsah</a>
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      <div><strong>VoIP analytika</strong><small>pro VoIPmonitor</small></div>
+    </div>
+    <nav aria-label="Hlavní navigace">
+      <button class="nav-button" type="button" data-view="dashboard" aria-current="page"><span class="icon icon-grid" aria-hidden="true"></span>Přehled</button>
+      <button class="nav-button" type="button" data-view="calls"><span class="icon icon-list" aria-hidden="true"></span>Hovory</button>
+      <button class="nav-button" type="button" data-view="import"><span class="icon icon-upload" aria-hidden="true"></span>Import dat</button>
+    </nav>
+    <div class="rail-bottom">
+      <label for="dataset">Zdroj dat</label>
+      <select id="dataset"><option value="demo">Ukázkové hovory</option><option value="pilot">Importované hovory</option></select>
+      <div class="rail-foot"><span aria-hidden="true"></span>Místní úložiště</div>
+    </div>
+  </aside>
+
+  <main id="content" tabindex="-1">
+    <header class="page-header">
+      <div>
+        <h1 id="page-title">Přehled hovorů</h1>
+        <p id="page-note"></p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="button button-outline" id="open-export"><span class="icon icon-download" aria-hidden="true"></span>Export CSV</button>
+        <button type="button" class="button button-primary" id="open-import"><span class="icon icon-plus" aria-hidden="true"></span>Importovat data</button>
+      </div>
+    </header>
+    <p id="global-status" class="notice" role="status" hidden></p>
+    <section id="period-filters" class="filters card" aria-label="Filtry období a pobočky">
+      <form id="period-form">
+        <div class="period-caption"><span class="icon icon-calendar" aria-hidden="true"></span><strong>Období</strong></div>
+        <label class="date-field"><span class="sr-only">Od</span><input id="date-from" name="from" type="date" aria-label="Začátek období"></label>
+        <span class="dates-separator" aria-hidden="true">–</span>
+        <label class="date-field"><span class="sr-only">Do</span><input id="date-to" name="to" type="date" aria-label="Konec období"></label>
+        <label class="branch-field"><span class="sr-only">Pobočka</span><select id="branch" name="branch"><option value="">Všechny pobočky</option></select></label>
+        <button class="button button-filter" type="submit">Použít</button>
+        <button class="link-button reset-period" id="latest-month" type="button">Poslední měsíc v datech</button>
+      </form>
+    </section>
+
+    <section id="dashboard" aria-label="Přehled" aria-busy="true">
+      <p class="loading" role="status">Načítám přehled…</p>
+    </section>
+
+    <section id="calls" aria-label="Hovory" hidden>
+      <div id="models-panel"></div>
+      <div class="card table-panel">
+        <form id="call-filters" class="table-filters">
+          <label class="search-field"><span class="icon icon-search" aria-hidden="true"></span><span class="sr-only">Vyhledat hovory</span><input id="search" name="q" type="search" placeholder="Hledat v hovorech a přepisech" maxlength="120"></label>
+          <label><span class="sr-only">Téma</span><select id="topic-filter" name="topic"><option value="">Všechna témata</option></select></label>
+          <label><span class="sr-only">Sentiment</span><select id="sentiment-filter" name="sentiment"><option value="">Jakýkoli sentiment</option></select></label>
+          <button type="submit" class="button button-filter">Filtrovat</button>
+        </form>
+        <div id="calls-result" aria-busy="false"></div>
+      </div>
+    </section>
+
+    <section id="import" class="import-grid" aria-label="Import dat" hidden>
+      <div class="card import-card api-card">
+        <div class="api-head">
+          <span class="api-icon" aria-hidden="true"><span class="icon icon-wave"></span></span>
+          <div><h2>Přímý import z VoIPmonitoru</h2><p id="api-source-note">Načítám stav připojení…</p></div>
+        </div>
+        <form id="voip-form" class="voip-form" hidden>
+          <label>Od <input name="from" type="date" required></label>
+          <label>Do <input name="to" type="date" required></label>
+          <label>Sonda <input class="sensor-field" name="sensor" inputmode="numeric" pattern="[0-9]{1,10}" placeholder="Všechny sondy"></label>
+          <label class="api-check"><input name="recordings" type="checkbox" checked> Stáhnout WAV</label>
+          <button class="button button-primary" type="submit" id="submit-voip">Načíst z VoIPmonitoru</button>
+        </form>
+        <div id="voip-result" class="voip-result" role="status" hidden></div>
+      </div>
+      <div class="card import-card">
+        <h2>Přidat soubory</h2>
+        <p>Vložte CSV a odpovídající anonymizované nahrávky. Pokud některé nahrávky chybí, můžete je doplnit později.</p>
+        <form id="import-form">
+          <label class="file-field">
+            <span class="file-icon icon icon-file" aria-hidden="true"></span>
+            <span><strong>Hovory z VoIPmonitoru</strong><small>Jeden CSV soubor v UTF-8</small></span>
+            <input type="file" name="cdr" accept=".csv,text/csv" required>
+          </label>
+          <label class="file-field">
+            <span class="file-icon icon icon-wave" aria-hidden="true"></span>
+            <span><strong>Nahrávky hovorů</strong><small>WAV 16bit PCM, nejvýše 60 souborů v dávce</small></span>
+            <input type="file" name="wav" accept=".wav,audio/wav" multiple>
+          </label>
+          <p class="import-limit">Nejvýše 32 MiB na WAV a 96 MiB na dávku.</p>
+          <button type="submit" class="button button-primary" id="submit-import">Spárovat a importovat</button>
+        </form>
+        <div id="import-result" role="status" hidden></div>
+      </div>
+
+      <div class="card import-guide">
+        <h2>Formát dat</h2>
+        <p>CSV musí obsahovat <code>cdrId</code> a <code>calldate</code>. Pro nahrávku použijte stejný název jako ID hovoru, například <code>VPM-1001.wav</code>. Jiný název uveďte v poli <code>audio_file</code>.</p>
+        <div class="field-guide">
+          <span>Povinné</span><code>cdrId, calldate</code>
+          <span>Volitelné</span><code>audio_file, id_sensor, branch, connect_duration, mos, jitter_ms, packet_loss_pct</code>
+        </div>
+        <h3>Zkušební dvojice</h3>
+        <div class="sample-links"><a href="/examples/cdr.csv" download="cdr.csv">Stáhnout CSV</a><a href="/examples/VPM-1001.wav" download="VPM-1001.wav">Stáhnout WAV</a></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title">
+    <div class="dialog-head">
+      <div><p class="eyebrow" id="detail-meta">Detail hovoru</p><h2 id="detail-title">Detail hovoru</h2></div>
+      <form method="dialog"><button class="icon-button" type="submit" aria-label="Zavřít detail hovoru">×</button></form>
+    </div>
+    <div id="detail-content"></div>
+  </dialog>
+  <dialog id="export-dialog" class="export-dialog" aria-labelledby="export-title">
+    <div class="dialog-head">
+      <h2 id="export-title">Export hovorů</h2>
+      <form method="dialog"><button class="icon-button" type="submit" aria-label="Zavřít export">×</button></form>
+    </div>
+    <form id="export-form">
+      <p id="export-description">CSV použije aktuální filtry.</p>
+      <label class="check-field"><input type="checkbox" name="includeTranscript"> Zahrnout celé přepisy</label>
+      <button class="button button-primary" type="submit">Stáhnout CSV</button>
+    </form>
+  </dialog>
+</body>
+</html>
